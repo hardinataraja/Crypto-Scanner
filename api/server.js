@@ -2,10 +2,9 @@
 // Read-only: hanya membaca data blockchain publik. Tidak ada transaksi, tidak ada private key.
 
 const CONFIG = {
-  // OPSIONAL. Tidak wajib. Jika diisi dengan key Etherscan V2 milik Anda sendiri
-  // (https://etherscan.io/apis), scanner menambahkan info "source code verified".
-  // Biarkan kosong untuk memakai RPC publik saja.
-  API_KEY: ""
+  // Tidak ada API key yang dibutuhkan. Verifikasi source code kontrak memakai
+  // Sourcify (gratis, publik, tanpa key): https://sourcify.dev
+  SOURCIFY: "https://sourcify.dev/server/v2/contract"
 };
 
 const CHAINS = {
@@ -75,16 +74,18 @@ function formatUnits(v, decimals) {
   return Number(whole).toLocaleString("en-US") + (frac ? "." + frac : "");
 }
 
+// true = source terverifikasi di Sourcify, false = belum ada, null = tidak dapat dicek.
+// Terverifikasi hanya berarti source code cocok dengan bytecode, BUKAN bahwa kontrak aman.
 async function sourceVerified(net, address) {
-  if (!CONFIG.API_KEY) return null;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 5000);
   try {
-    const u = "https://api.etherscan.io/v2/api?chainid=" + net.id +
-      "&module=contract&action=getsourcecode&address=" + address + "&apikey=" + encodeURIComponent(CONFIG.API_KEY);
-    const r = await fetch(u);
+    const r = await fetch(CONFIG.SOURCIFY + "/" + net.id + "/" + address, { signal: ac.signal });
+    if (r.status === 404) return false;
+    if (!r.ok) return null;
     const j = await r.json();
-    if (!Array.isArray(j.result) || !j.result[0]) return null;
-    return !!j.result[0].SourceCode;
-  } catch { return null; }
+    return !!(j && j.match);
+  } catch { return null; } finally { clearTimeout(timer); }
 }
 
 async function scanEntry(net, e, wallet, gasPrice) {
@@ -100,6 +101,9 @@ async function scanEntry(net, e, wallet, gasPrice) {
     const code = await rpc(net, "eth_getCode", [e.contract, "latest"]);
     if (!code || code === "0x") { r.notes.push("No contract code at this address"); return r; }
     r.sourceVerified = await sourceVerified(net, e.contract);
+    r.notes.push(r.sourceVerified === true ? "Source code verified on Sourcify (not a safety guarantee)"
+      : r.sourceVerified === false ? "Source code NOT verified on Sourcify"
+      : "Source verification unavailable");
 
     if (e.claimedSelector) {
       const v = await rpc(net, "eth_call", [{ to: e.contract, data: e.claimedSelector + pad }, "latest"]);
